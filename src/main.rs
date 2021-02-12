@@ -3,7 +3,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{stdin, BufRead};
 use std::process::exit;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use console::Style;
@@ -16,6 +15,10 @@ use crate::ioctl_fideduperange::{dedupe_files, DedupeRequest, DedupeResponse};
 
 mod ioctl_fideduperange;
 
+fn success_style() -> Style {
+    return Style::new().for_stderr().green();
+}
+
 fn error_style() -> Style {
     return Style::new().for_stderr().red();
 }
@@ -25,18 +28,24 @@ async fn main() {
     // up to 64 ioctls at a time
     let permits = 64;
     let semaphore = Arc::new(Semaphore::new(permits));
-    let any_failed = Arc::new(AtomicBool::new(false));
     let (push_result, mut read_result) =
         tokio::sync::mpsc::channel::<Result<DedupeResult, DedupeError>>(32);
 
-    let printer_any_failed = Arc::clone(&any_failed);
     let printer_task = tokio::task::spawn(async move {
+        let mut max_bytes_saved: u64 = 0;
+        let mut any_failed = false;
         while let Some(result) = read_result.recv().await {
-            if result.is_err() {
-                printer_any_failed.store(true, Ordering::Relaxed);
-            }
+            match result {
+                Ok(ref dedupe) => {
+                    max_bytes_saved += dedupe.total_bytes_saved;
+                }
+                Err(_) => {
+                    any_failed = true;
+                }
+            };
             print_task_completion(result);
         }
+        (max_bytes_saved, any_failed)
     });
 
     let mut dedup_lines = Vec::<String>::new();
@@ -64,9 +73,17 @@ async fn main() {
     drop(push_result);
 
     // await the end of printing, which is also after all tasks finish (due to above drop)
-    printer_task.await.unwrap();
+    let (max_bytes_saved, any_failed) = printer_task.await.unwrap();
 
-    if any_failed.load(Ordering::Relaxed) {
+    eprintln!(
+        "{}",
+        success_style().apply_to(format!(
+            "Saved up to {}B total!",
+            SizeFormatterBinary::new(max_bytes_saved)
+        ))
+    );
+
+    if any_failed {
         exit(1);
     }
 }
