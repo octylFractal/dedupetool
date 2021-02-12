@@ -1,0 +1,12 @@
+[package]
+name = "dedupetool-sys"
+version = "0.1.0"
+authors = ["Octavia Togami <octavia.togami@gmail.com>"]
+edition = "2018"
+links = "dedupetool"
+
+[dependencies]
+once_cell = "1.5.2"
+
+[build-dependencies]
+cc = "1.0.66"
