@@ -15,9 +15,6 @@ use dedupetool_sys::*;
 /// Rounding down in case other systems have padding -> 100.
 const IOCTL_DEDUPE_MAX_DESTS: usize = 100;
 
-/// Doing a dedupe with this little data is probably too expensive.
-const IOCTL_DEDUPE_MIN_BYTES: u64 = 16 * 1024;
-
 /// We're only likely to be able to dedupe this much at once. See ioctl_fideduperange(2) for why.
 const IOCTL_DEDUPE_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -30,12 +27,6 @@ pub fn dedupe_files<K: Eq + Hash + Clone>(
     src_range: Range<u64>,
     request: HashMap<K, DedupeRequest>,
 ) -> Result<HashMap<K, Vec<DedupeResponse>>, std::io::Error> {
-    if (src_range.end - src_range.start) < IOCTL_DEDUPE_MIN_BYTES {
-        return Ok(request
-            .into_iter()
-            .map(|(k, _)| (k, vec![DedupeResponse::RangeTooSmall]))
-            .collect());
-    }
     let fd_map: HashMap<RawFd, K> = request
         .keys()
         .map(|k| (request[k].dest.as_raw_fd(), k.clone()))
