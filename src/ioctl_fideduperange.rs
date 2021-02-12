@@ -19,12 +19,6 @@ pub fn dedupe_files<K: Eq + Hash + Clone>(
     src_range: Range<u64>,
     request: HashMap<K, DedupeRequest>,
 ) -> Result<HashMap<K, DedupeResponse>, std::io::Error> {
-    // flush files to sync extent mapping
-    src.sync_all()?;
-    for x in request.values() {
-        x.dest.sync_all()?;
-    }
-
     let fd_map: HashMap<RawFd, K> = request
         .keys()
         .map(|k| (request[k].dest.as_raw_fd(), k.clone()))
@@ -82,6 +76,12 @@ pub fn dedupe_files<K: Eq + Hash + Clone>(
     };
     if result == -1 {
         return Err(std::io::Error::last_os_error());
+    }
+
+    // flush files to sync extent mapping
+    src.sync_all()?;
+    for x in request.values() {
+        x.dest.sync_all()?;
     }
 
     Ok(dedupe_request_info

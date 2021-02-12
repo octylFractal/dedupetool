@@ -101,7 +101,9 @@ fn process_dedupe(files: Vec<String>) -> Result<DedupeResult, std::io::Error> {
             ))
         })
         .collect::<Result<HashMap<String, DedupeRequest>, std::io::Error>>()?;
-    let responses = dedupe_files(first_file, 0..std::fs::metadata(first)?.len(), dest_reqs)?;
+    let responses = tokio::task::block_in_place(move ||
+        dedupe_files(first_file, 0..std::fs::metadata(first)?.len(), dest_reqs)
+    )?;
 
     let mut files_errored = HashMap::<String, std::io::Error>::new();
     let mut files_affected = Vec::<String>::new();
