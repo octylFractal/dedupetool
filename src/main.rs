@@ -1,6 +1,6 @@
 #![deny(warnings)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{stdin, BufRead};
 use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -101,25 +101,27 @@ fn process_dedupe(files: Vec<String>) -> Result<DedupeResult, std::io::Error> {
             ))
         })
         .collect::<Result<HashMap<String, DedupeRequest>, std::io::Error>>()?;
-    let responses = tokio::task::block_in_place(move ||
+    let responses: HashMap<String, Vec<DedupeResponse>> = tokio::task::block_in_place(move || {
         dedupe_files(first_file, 0..std::fs::metadata(first)?.len(), dest_reqs)
-    )?;
+    })?;
 
     let mut files_errored = HashMap::<String, std::io::Error>::new();
-    let mut files_affected = Vec::<String>::new();
+    let mut files_affected = HashSet::<String>::new();
     let mut total_bytes_saved = 0;
 
-    for (file, response) in responses {
-        match response {
-            DedupeResponse::RangeSame { bytes_deduped } => {
-                files_affected.push(file);
-                total_bytes_saved += bytes_deduped;
-            }
-            DedupeResponse::Error(e) => {
-                files_errored.insert(file, e);
-            }
-            DedupeResponse::RangeDiffers => {
-                // does nothing, we don't care if this occurred
+    for (file, response_vec) in responses {
+        for response in response_vec {
+            match response {
+                DedupeResponse::RangeSame { bytes_deduped } => {
+                    files_affected.insert(file.clone());
+                    total_bytes_saved += bytes_deduped;
+                }
+                DedupeResponse::Error(e) => {
+                    files_errored.insert(file.clone(), e);
+                }
+                DedupeResponse::RangeTooSmall | DedupeResponse::RangeDiffers => {
+                    // does nothing, we don't care if this occurred
+                }
             }
         }
     }
@@ -127,7 +129,7 @@ fn process_dedupe(files: Vec<String>) -> Result<DedupeResult, std::io::Error> {
     Ok(DedupeResult {
         file_targeted: first.clone(),
         files_errored,
-        files_affected,
+        files_affected: files_affected.into_iter().collect(),
         total_bytes_saved,
     })
 }
