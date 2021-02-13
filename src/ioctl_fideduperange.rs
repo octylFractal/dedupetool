@@ -93,12 +93,6 @@ pub fn dedupe_files<K: Eq + Hash + Clone>(
         offset += IOCTL_DEDUPE_MAX_BYTES;
     }
 
-    // flush files to sync extent mapping
-    src.sync_all()?;
-    for x in request.values() {
-        x.dest.sync_all()?;
-    }
-
     Ok(aggregate_results)
 }
 
@@ -161,7 +155,6 @@ impl DedupeRequest {
 
 pub enum DedupeResponse {
     Error(std::io::Error),
-    RangeTooSmall,
     RangeDiffers,
     RangeSame { bytes_deduped: u64 },
 }

@@ -30,8 +30,7 @@ async fn main() {
     // up to 64 ioctls at a time
     let permits = 64;
     let semaphore = Arc::new(Semaphore::new(permits));
-    let (push_result, mut read_result) =
-        tokio::sync::mpsc::channel::<DedupeResult>(32);
+    let (push_result, mut read_result) = tokio::sync::mpsc::channel::<DedupeResult>(32);
 
     let printer_task = tokio::task::spawn(async move {
         let mut max_bytes_saved: u64 = 0;
@@ -41,8 +40,7 @@ async fn main() {
                 Ok(Some(ref dedupe)) => {
                     max_bytes_saved += dedupe.total_bytes_saved;
                 }
-                Ok(_) => {
-                },
+                Ok(_) => {}
                 Err(_) => {
                     any_failed = true;
                 }
@@ -92,11 +90,7 @@ async fn main() {
     }
 }
 
-fn kick_off(
-    files: Vec<String>,
-    semaphore: Arc<Semaphore>,
-    push_result: Sender<DedupeResult>,
-) {
+fn kick_off(files: Vec<String>, semaphore: Arc<Semaphore>, push_result: Sender<DedupeResult>) {
     tokio::task::spawn(async move {
         let _permit = semaphore.acquire().await.expect("Failed to get permit");
 
@@ -144,7 +138,7 @@ fn process_dedupe(files: Vec<String>) -> Result<Option<DedupeInfo>, std::io::Err
                 DedupeResponse::Error(e) => {
                     files_errored.insert(file.clone(), e);
                 }
-                DedupeResponse::RangeTooSmall | DedupeResponse::RangeDiffers => {
+                DedupeResponse::RangeDiffers => {
                     // does nothing, we don't care if this occurred
                 }
             }
@@ -161,7 +155,7 @@ fn process_dedupe(files: Vec<String>) -> Result<Option<DedupeInfo>, std::io::Err
 
 fn print_task_completion(result: DedupeResult) {
     match result {
-        Ok(dedupe) => {
+        Ok(Some(dedupe)) => {
             eprintln!("==> De-dupe Targeting {}", dedupe.file_targeted);
             if dedupe.files_affected.len() > 0 {
                 eprintln!(
@@ -185,6 +179,7 @@ fn print_task_completion(result: DedupeResult) {
                 }
             }
         }
+        Ok(_) => {}
         Err(e) => {
             eprintln!(
                 "{}",
