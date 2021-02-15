@@ -6,9 +6,8 @@ use std::mem::size_of;
 use std::ops::Range;
 use std::os::unix::io::{AsRawFd, RawFd};
 
-use libc::ioctl;
-
-use dedupetool_sys::*;
+use crate::ioctl::ioctl;
+use crate::ioctl_consts::*;
 
 /// This is just a number I came up with. The max combined size needs to be less than a page,
 /// so (4096 <page> - 24 <sizeof request internal>) / 32 <sizeof request internal info> = 127
@@ -23,7 +22,7 @@ const IOCTL_DEDUPE_MAX_BYTES: u64 = 16 * 1024 * 1024;
 /// Destination files go in [request], keyed by whatever you wish. Results will be reported
 /// under the same keys.
 pub fn dedupe_files<K: Eq + Hash + Clone>(
-    src: std::fs::File,
+    src: &std::fs::File,
     src_range: Range<u64>,
     request: HashMap<K, DedupeRequest>,
 ) -> Result<HashMap<K, Vec<DedupeResponse>>, std::io::Error> {
@@ -70,8 +69,8 @@ pub fn dedupe_files<K: Eq + Hash + Clone>(
                     errno if errno < 0 => {
                         DedupeResponse::Error(std::io::Error::from_raw_os_error(-errno))
                     }
-                    x if x == *FILE_DEDUPE_RANGE_DIFFERS as i32 => DedupeResponse::RangeDiffers,
-                    x if x == *FILE_DEDUPE_RANGE_SAME as i32 => {
+                    FILE_DEDUPE_RANGE_DIFFERS => DedupeResponse::RangeDiffers,
+                    FILE_DEDUPE_RANGE_SAME => {
                         if info.bytes_deduped == 0 {
                             // I guess this is also RangeDiffers?
                             DedupeResponse::RangeDiffers
@@ -101,7 +100,7 @@ fn call_ioctl_unsafe(
     request_internal: DedupeRequestInternal,
     infos: &mut [DedupeRequestInternalInfo],
 ) -> Result<(), std::io::Error> {
-    let result = unsafe {
+    unsafe {
         // I'm going MAD with POWER!
         let memsize = size_of::<DedupeRequestInternal>()
             + size_of::<DedupeRequestInternalInfo>() * (request_internal.dest_count) as usize;
@@ -121,22 +120,20 @@ fn call_ioctl_unsafe(
             array = array.add(1);
         }
 
-        let result = ioctl(src.as_raw_fd(), *FIDEDUPERANGE, memchunk);
+        let result = ioctl(&src, FIDEDUPERANGE, memchunk);
 
-        // copy back results
-        array = array_base;
-        for x in infos.iter_mut() {
-            *x = array.read();
-            array = array.add(1);
+        if result.is_ok() {
+            // copy back results
+            array = array_base;
+            for x in infos.iter_mut() {
+                *x = array.read();
+                array = array.add(1);
+            }
         }
 
         libc::free(memchunk);
         result
-    };
-    if result == -1 {
-        return Err(std::io::Error::last_os_error());
     }
-    Ok(())
 }
 
 pub struct DedupeRequest {

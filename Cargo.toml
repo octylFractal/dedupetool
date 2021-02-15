@@ -4,16 +4,17 @@ version = "0.1.0"
 authors = ["Octavia Togami <octavia.togami@gmail.com>"]
 edition = "2018"
 
-[workspace]
-members = ["dedupetool-sys"]
-
 [dependencies]
 console = "0.14.0"
 libc = "0.2.86"
 size_format = "1.0.2"
 thiserror = "1.0.23"
-dedupetool-sys = { version = "0.1.0", path = "dedupetool-sys" }
+structopt = "0.3.21"
+
+[dependencies.num-format]
+version = "0.4.0"
+features = ["with-system-locale"]
 
 [dependencies.tokio]
 version = "1.2.0"
-features = ["sync", "rt-multi-thread", "macros"]
+features = ["sync", "rt-multi-thread", "macros", "fs"]

@@ -11,9 +11,8 @@ use thiserror::Error;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Semaphore;
 
-use crate::ioctl_fideduperange::{dedupe_files, DedupeRequest, DedupeResponse};
-
-mod ioctl_fideduperange;
+use dedupetool::ioctl_fideduperange::{dedupe_files, DedupeRequest, DedupeResponse};
+use dedupetool::ioctl_fiemap::get_extents;
 
 fn success_style() -> Style {
     return Style::new().for_stderr().green();
@@ -27,8 +26,8 @@ type DedupeResult = Result<Option<DedupeInfo>, DedupeError>;
 
 #[tokio::main]
 async fn main() {
-    // up to 64 ioctls at a time
-    let permits = 64;
+    // up to 32 ioctls at a time
+    let permits = 32;
     let semaphore = Arc::new(Semaphore::new(permits));
     let (push_result, mut read_result) = tokio::sync::mpsc::channel::<DedupeResult>(32);
 
@@ -94,34 +93,43 @@ fn kick_off(files: Vec<String>, semaphore: Arc<Semaphore>, push_result: Sender<D
     tokio::task::spawn(async move {
         let _permit = semaphore.acquire().await.expect("Failed to get permit");
 
-        let result = process_dedupe(files.clone()).map_err(|e| DedupeError {
-            target_files: files,
-            source: e,
-        });
+        let result = process_dedupe(files.clone())
+            .await
+            .map_err(|e| DedupeError {
+                target_files: files,
+                source: e,
+            });
 
         push_result.send(result).await.expect("Send failed");
     });
 }
 
-fn process_dedupe(files: Vec<String>) -> Result<Option<DedupeInfo>, std::io::Error> {
+async fn process_dedupe(mut files: Vec<String>) -> Result<Option<DedupeInfo>, std::io::Error> {
+    remove_already_shared_files(&mut files).await?;
+    if files.len() < 2 {
+        // There are no files to deduplicate.
+        return Ok(None);
+    }
     let (first, rest) = files.split_first().unwrap();
 
-    if std::fs::metadata(first)?.len() < 16 * 1024 {
+    if tokio::fs::metadata(first).await?.len() < 16 * 1024 {
+        // Too small for it to be worth.
         return Ok(None);
     }
 
-    let first_file = std::fs::File::open(first)?;
-    let dest_reqs = rest
-        .into_iter()
-        .map(|file| {
-            Ok((
-                file.clone(),
-                DedupeRequest::new(std::fs::OpenOptions::new().write(true).open(file)?, 0),
-            ))
-        })
-        .collect::<Result<HashMap<String, DedupeRequest>, std::io::Error>>()?;
+    let first_file = tokio::fs::File::open(first).await?.into_std().await;
+
     let responses: HashMap<String, Vec<DedupeResponse>> = tokio::task::block_in_place(move || {
-        dedupe_files(first_file, 0..std::fs::metadata(first)?.len(), dest_reqs)
+        let dest_reqs = rest
+            .into_iter()
+            .map(|file| {
+                Ok((
+                    file.clone(),
+                    DedupeRequest::new(std::fs::OpenOptions::new().write(true).open(file)?, 0),
+                ))
+            })
+            .collect::<Result<HashMap<String, DedupeRequest>, std::io::Error>>()?;
+        dedupe_files(&first_file, 0..std::fs::metadata(first)?.len(), dest_reqs)
     })?;
 
     let mut files_errored = HashMap::<String, std::io::Error>::new();
@@ -151,6 +159,43 @@ fn process_dedupe(files: Vec<String>) -> Result<Option<DedupeInfo>, std::io::Err
         files_affected: files_affected.into_iter().collect(),
         total_bytes_saved,
     }))
+}
+
+async fn remove_already_shared_files(files: &mut Vec<String>) -> Result<(), std::io::Error> {
+    // Map of Vec<(offset, len)> to Vec of files
+    let mut physical_extent_buckets = HashMap::<Vec<(u64, u64)>, Vec<String>>::new();
+    for file in files.iter() {
+        let f = tokio::fs::File::open(file).await?.into_std().await;
+        let extents = tokio::task::block_in_place(|| get_extents(&f, 0..u64::MAX, false))?;
+        physical_extent_buckets
+            .entry(
+                extents
+                    .into_iter()
+                    .map(|ext| (ext.physical_offset, ext.length))
+                    .collect(),
+            )
+            .or_insert_with(|| Vec::new())
+            .push(file.clone());
+    }
+
+    let biggest_vec = physical_extent_buckets
+        .values()
+        .max_by_key(|v| v.len())
+        .unwrap();
+
+    if biggest_vec.len() == 1 {
+        // There are no shared groups, existing vec is good
+    } else if biggest_vec.len() == files.len() {
+        // Everything is shared! Empty the files list!
+        files.clear();
+    } else {
+        // Some files are shared, take the biggest vec and remove all but 1 of them from the files
+        let (_, rest) = biggest_vec.split_first().unwrap();
+        let remove_these: HashSet<_> = rest.clone().into_iter().collect();
+        files.retain(|x| !remove_these.contains(x));
+    }
+
+    Ok(())
 }
 
 fn print_task_completion(result: DedupeResult) {
