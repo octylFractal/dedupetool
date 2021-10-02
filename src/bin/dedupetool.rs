@@ -11,6 +11,8 @@ use thiserror::Error;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Semaphore;
 
+use structopt::StructOpt;
+
 use dedupetool::ioctl_fideduperange::{dedupe_files, DedupeRequest, DedupeResponse};
 use dedupetool::ioctl_fiemap::get_extents;
 
@@ -24,10 +26,18 @@ fn error_style() -> Style {
 
 type DedupeResult = Result<Option<DedupeInfo>, DedupeError>;
 
+#[derive(StructOpt)]
+#[structopt(name = "dedupetool", about = "File de-deuplicator")]
+struct DedupeTool {
+    /// Maximum concurrent de-dupe calls.
+    #[structopt(short, long, default_value = "32")]
+    max_concurrency: usize,
+}
+
 #[tokio::main]
 async fn main() {
-    // up to 32 ioctls at a time
-    let permits = 32;
+    let args: DedupeTool = DedupeTool::from_args();
+    let permits = args.max_concurrency;
     let semaphore = Arc::new(Semaphore::new(permits));
     let (push_result, mut read_result) = tokio::sync::mpsc::channel::<DedupeResult>(32);
 
