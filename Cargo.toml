@@ -3,10 +3,10 @@ name = "dedupetool"
 version = "0.1.0"
 authors = ["Octavia Togami <octavia.togami@gmail.com>"]
 license = "GPL-3.0-or-later"
-edition = "2018"
+edition = "2021"
 
 [dependencies]
-console = "0.14"
+console = "0.15"
 libc = "0.2"
 size_format = "1"
 thiserror = "1"
