@@ -20,7 +20,7 @@ pub fn get_extents(
     while offset < range.end {
         let mut request = FileExtentMapRequest::new(offset..range.end, flags);
 
-        ioctl(&file, FS_IOC_FIEMAP, &mut request)?;
+        ioctl(file, FS_IOC_FIEMAP, &mut request)?;
 
         let valid_extents: &[FileExtent] =
             &request.fm_extents[0..(request.fm_mapped_extents as usize)];
@@ -33,7 +33,7 @@ pub fn get_extents(
             });
         }
 
-        if offset == 0 && valid_extents.len() == 0 {
+        if offset == 0 && valid_extents.is_empty() {
             // empty file
             return Ok(Vec::new());
         }

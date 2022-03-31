@@ -17,11 +17,11 @@ use dedupetool::ioctl_fideduperange::{dedupe_files, DedupeRequest, DedupeRespons
 use dedupetool::ioctl_fiemap::get_extents;
 
 fn success_style() -> Style {
-    return Style::new().for_stderr().green();
+    Style::new().for_stderr().green()
 }
 
 fn error_style() -> Style {
-    return Style::new().for_stderr().red();
+    Style::new().for_stderr().red()
 }
 
 type DedupeResult = Result<Option<DedupeInfo>, DedupeError>;
@@ -131,7 +131,7 @@ async fn process_dedupe(mut files: Vec<String>) -> Result<Option<DedupeInfo>, st
 
     let responses: HashMap<String, Vec<DedupeResponse>> = tokio::task::block_in_place(move || {
         let dest_reqs = rest
-            .into_iter()
+            .iter()
             .map(|file| {
                 Ok((
                     file.clone(),
@@ -184,7 +184,7 @@ async fn remove_already_shared_files(files: &mut Vec<String>) -> Result<(), std:
                     .map(|ext| (ext.physical_offset, ext.length))
                     .collect(),
             )
-            .or_insert_with(|| Vec::new())
+            .or_insert_with(Vec::new)
             .push(file.clone());
     }
 
@@ -201,7 +201,7 @@ async fn remove_already_shared_files(files: &mut Vec<String>) -> Result<(), std:
     } else {
         // Some files are shared, take the biggest vec and remove all but 1 of them from the files
         let (_, rest) = biggest_vec.split_first().unwrap();
-        let remove_these: HashSet<_> = rest.clone().into_iter().collect();
+        let remove_these: HashSet<_> = rest.iter().collect();
         files.retain(|x| !remove_these.contains(x));
     }
 
@@ -212,7 +212,7 @@ fn print_task_completion(result: DedupeResult) {
     match result {
         Ok(Some(dedupe)) => {
             eprintln!("==> De-dupe Targeting {}", dedupe.file_targeted);
-            if dedupe.files_affected.len() > 0 {
+            if !dedupe.files_affected.is_empty() {
                 eprintln!(
                     "Saved {}B by re-using content in:",
                     SizeFormatterBinary::new(dedupe.total_bytes_saved),
@@ -221,7 +221,7 @@ fn print_task_completion(result: DedupeResult) {
                     eprintln!("    {}", affected);
                 }
             }
-            if dedupe.files_errored.len() > 0 {
+            if !dedupe.files_errored.is_empty() {
                 eprintln!(
                     "{}",
                     error_style().apply_to("Errors encountered during the above operation:")

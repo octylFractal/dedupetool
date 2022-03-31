@@ -62,7 +62,7 @@ pub fn dedupe_files<K: Eq + Hash + Clone>(
                     reserved: 0,
                 })
                 .collect::<Vec<_>>();
-            call_ioctl_unsafe(&src, request_internal, &mut infos)?;
+            call_ioctl_unsafe(src, request_internal, &mut infos)?;
 
             for info in infos {
                 let response = match info.status {
@@ -84,7 +84,7 @@ pub fn dedupe_files<K: Eq + Hash + Clone>(
                 };
                 let vec = aggregate_results
                     .entry(fd_map[&(info.dest_fd as RawFd)].clone())
-                    .or_insert_with(|| vec![]);
+                    .or_insert_with(Vec::new);
                 vec.push(response);
             }
         }
@@ -110,7 +110,7 @@ fn call_ioctl_unsafe(
         }
         let req_ptr = memchunk.cast::<DedupeRequestInternal>();
         // push in the request at the front
-        req_ptr.write(request_internal.clone());
+        req_ptr.write(request_internal);
 
         // fill in the """array"""
         let array_base = req_ptr.add(1).cast::<DedupeRequestInternalInfo>();
@@ -120,7 +120,7 @@ fn call_ioctl_unsafe(
             array = array.add(1);
         }
 
-        let result = ioctl(&src, FIDEDUPERANGE, memchunk);
+        let result = ioctl(src, FIDEDUPERANGE, memchunk);
 
         if result.is_ok() {
             // copy back results
