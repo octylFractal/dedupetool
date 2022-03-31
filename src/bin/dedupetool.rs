@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::io::{stdin, BufRead};
+use std::io::{BufRead, stdin};
 use std::process::exit;
 
 use clap::Parser;
@@ -39,7 +39,7 @@ struct DedupeTool {
     skip_fiemap: bool,
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
     let args: DedupeTool = DedupeTool::parse();
 
@@ -140,7 +140,10 @@ async fn internal_process_dedupe(
 
     let first_file = tokio::fs::File::open(first).await?.into_std().await;
 
-    let responses: HashMap<String, Vec<DedupeResponse>> = tokio::task::block_in_place(move || {
+    // 'static-ify first & rest by cloning them
+    let first_static = first.clone();
+    let rest = Vec::from(rest);
+    let responses: HashMap<String, Vec<DedupeResponse>> = tokio::task::spawn_blocking(move || {
         let dest_reqs = rest
             .iter()
             .map(|file| {
@@ -150,8 +153,14 @@ async fn internal_process_dedupe(
                 ))
             })
             .collect::<Result<HashMap<String, DedupeRequest>, std::io::Error>>()?;
-        dedupe_files(&first_file, 0..std::fs::metadata(first)?.len(), dest_reqs)
-    })?;
+        dedupe_files(
+            &first_file,
+            0..std::fs::metadata(first_static)?.len(),
+            dest_reqs,
+        )
+    })
+    .await
+    .expect("failed to spawn blocking")?;
 
     let mut files_errored = HashMap::<String, std::io::Error>::new();
     let mut files_affected = HashSet::<String>::new();
@@ -189,7 +198,9 @@ async fn remove_already_shared_files(files: &mut Vec<String>) -> Result<(), std:
     let mut physical_extent_buckets = HashMap::<Vec<(u64, u64)>, Vec<String>>::new();
     for file in files.iter() {
         let f = tokio::fs::File::open(file).await?.into_std().await;
-        let extents = tokio::task::block_in_place(|| get_extents(&f, 0..u64::MAX, false))?;
+        let extents = tokio::task::spawn_blocking(move || get_extents(&f, 0..u64::MAX, false))
+            .await
+            .expect("failed to spawn blocking")?;
         physical_extent_buckets
             .entry(
                 extents
