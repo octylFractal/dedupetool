@@ -13,16 +13,13 @@ strip = true
 [dependencies]
 console = "0.15.0"
 libc = "0.2.119"
+num-format = "0.4.0"
 size_format = "1.0.2"
 thiserror = "1.0.30"
 
 [dependencies.clap]
 version = "3.1.6"
 features = ["derive"]
-
-[dependencies.num-format]
-version = "0.4.0"
-features = ["with-system-locale"]
 
 [dependencies.tokio]
 version = "1.17.0"

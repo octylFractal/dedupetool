@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use num_format::{SystemLocale, ToFormattedString};
+use num_format::{Locale, ToFormattedString};
 
 use dedupetool::ioctl_fiemap::get_extents;
 
@@ -37,20 +37,19 @@ fn print_file(path: &Path) -> Result<(), std::io::Error> {
 
     let file = std::fs::File::open(path)?;
     let extents = get_extents(&file, 0..u64::MAX, false)?;
-    let locale = SystemLocale::default().unwrap();
     for (i, extent) in extents.into_iter().enumerate() {
         println!("Extent #{}", i);
         println!(
             "    Logical range: {} - {}",
-            extent.logical_offset.to_formatted_string(&locale),
-            (extent.logical_offset + extent.length).to_formatted_string(&locale)
+            extent.logical_offset.to_formatted_string(&Locale::en),
+            (extent.logical_offset + extent.length).to_formatted_string(&Locale::en)
         );
         println!(
             "    Physical range: {} - {}",
-            extent.physical_offset.to_formatted_string(&locale),
-            (extent.physical_offset + extent.length).to_formatted_string(&locale)
+            extent.physical_offset.to_formatted_string(&Locale::en),
+            (extent.physical_offset + extent.length).to_formatted_string(&Locale::en)
         );
-        println!("    Length: {}", extent.length.to_formatted_string(&locale));
+        println!("    Length: {}", extent.length.to_formatted_string(&Locale::en));
         println!(
             "    Flags: {}",
             extent
