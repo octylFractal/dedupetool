@@ -2,17 +2,16 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::io::{stdin, BufRead};
 use std::process::exit;
-use std::sync::Arc;
 
 use clap::Parser;
 use console::Style;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use size_format::SizeFormatterBinary;
 use thiserror::Error;
-use tokio::runtime::Handle;
-use tokio::sync::mpsc::Sender;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use dedupetool::ioctl_fideduperange::{dedupe_files, DedupeRequest, DedupeResponse};
 use dedupetool::ioctl_fiemap::get_extents;
@@ -43,39 +42,10 @@ struct DedupeTool {
 #[tokio::main]
 async fn main() {
     let args: DedupeTool = DedupeTool::parse();
-    let permits = args.max_concurrency;
-    let semaphore = Arc::new(Semaphore::new(permits));
-    let (push_result, mut read_result) = tokio::sync::mpsc::channel::<DedupeResult>(32);
 
-    let printer_task = tokio::task::spawn(async move {
-        let mut max_bytes_saved: u64 = 0;
-        let mut any_failed = false;
-        while let Some(result) = read_result.recv().await {
-            match result {
-                Ok(Some(ref dedupe)) => {
-                    max_bytes_saved += dedupe.total_bytes_saved;
-                }
-                Ok(_) => {}
-                Err(_) => {
-                    any_failed = true;
-                }
-            };
-            print_task_completion(result);
-        }
-        (max_bytes_saved, any_failed)
-    });
-
+    let mut tracker = Tracker::default();
     let mut dedup_lines = Vec::<String>::new();
-    let do_kick_off = |files| {
-        let semaphore = semaphore.clone();
-        let permit = Handle::current().block_on(async move {
-            semaphore
-                .acquire_owned()
-                .await
-                .expect("Failed to get permit")
-        });
-        kick_off(args.skip_fiemap, files, permit, push_result.clone())
-    };
+    let mut pending = FuturesUnordered::new();
     for line_res in stdin().lock().lines() {
         let line = match line_res {
             Ok(l) => l.trim_end().to_owned(),
@@ -83,7 +53,14 @@ async fn main() {
         };
         if line.is_empty() {
             if dedup_lines.len() > 1 {
-                do_kick_off(dedup_lines.clone());
+                let task = limit_concurrency(
+                    args.max_concurrency,
+                    process_dedupe(args.skip_fiemap, dedup_lines.clone()),
+                    &mut pending,
+                );
+                if let Some(result) = task.await {
+                    tracker.record_result(result);
+                }
             }
             dedup_lines.clear();
             continue;
@@ -92,48 +69,57 @@ async fn main() {
     }
 
     if !dedup_lines.is_empty() {
-        do_kick_off(dedup_lines);
+        let task = limit_concurrency(
+            args.max_concurrency,
+            process_dedupe(args.skip_fiemap, dedup_lines),
+            &mut pending,
+        );
+        if let Some(result) = task.await {
+            tracker.record_result(result);
+        }
     }
 
-    // drop our sender ref, so that when all tasks finish, the receiver closes
-    drop(push_result);
-
-    // await the end of printing, which is also after all tasks finish (due to above drop)
-    let (max_bytes_saved, any_failed) = printer_task.await.unwrap();
+    // Burn the rest of the tasks off...
+    while pending.next().await.is_some() {}
 
     eprintln!(
         "{}",
         success_style().apply_to(format!(
             "Saved up to {}B total!",
-            SizeFormatterBinary::new(max_bytes_saved)
+            SizeFormatterBinary::new(tracker.max_bytes_saved)
         ))
     );
 
-    if any_failed {
+    if tracker.any_failed {
         exit(1);
     }
 }
 
-fn kick_off(
-    skip_fiemap: bool,
-    files: Vec<String>,
-    semaphore_permit: OwnedSemaphorePermit,
-    push_result: Sender<DedupeResult>,
-) {
-    tokio::task::spawn(async move {
-        let result = process_dedupe(skip_fiemap, Cow::Borrowed(&files))
-            .await
-            .map_err(|e| DedupeError {
-                target_files: files,
-                source: e,
-            });
-
-        push_result.send(result).await.expect("Send failed");
-        drop(semaphore_permit);
-    });
+async fn limit_concurrency<F, T>(
+    max_concurrency: usize,
+    task: F,
+    pending: &mut FuturesUnordered<F>,
+) -> Option<T>
+where
+    F: Future<Output = T>,
+{
+    pending.push(task);
+    if pending.len() == max_concurrency {
+        return Some(pending.next().await.unwrap());
+    }
+    None
 }
 
-async fn process_dedupe(
+async fn process_dedupe(skip_fiemap: bool, files: Vec<String>) -> DedupeResult {
+    internal_process_dedupe(skip_fiemap, Cow::Borrowed(&files))
+        .await
+        .map_err(|e| DedupeError {
+            target_files: files,
+            source: e,
+        })
+}
+
+async fn internal_process_dedupe(
     skip_fiemap: bool,
     mut files: Cow<'_, Vec<String>>,
 ) -> Result<Option<DedupeInfo>, std::io::Error> {
@@ -233,6 +219,27 @@ async fn remove_already_shared_files(files: &mut Vec<String>) -> Result<(), std:
     }
 
     Ok(())
+}
+
+#[derive(Default)]
+struct Tracker {
+    max_bytes_saved: u64,
+    any_failed: bool,
+}
+
+impl Tracker {
+    fn record_result(&mut self, result: DedupeResult) {
+        match result {
+            Ok(Some(ref dedupe)) => {
+                self.max_bytes_saved += dedupe.total_bytes_saved;
+            }
+            Ok(_) => {}
+            Err(_) => {
+                self.any_failed = true;
+            }
+        };
+        print_task_completion(result);
+    }
 }
 
 fn print_task_completion(result: DedupeResult) {
