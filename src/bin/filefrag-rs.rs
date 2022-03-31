@@ -4,24 +4,22 @@
 
 use std::path::{Path, PathBuf};
 
+use clap::Parser;
 use num_format::{SystemLocale, ToFormattedString};
-use structopt::StructOpt;
 
 use dedupetool::ioctl_fiemap::get_extents;
 
-#[derive(StructOpt)]
-#[structopt(name = "filefrag-rs", about = "Bare-bones filefrag command")]
+/// Bare-bones filefrag command.
+#[derive(Parser)]
+#[clap(name = "filefrag-rs", version)]
 struct FileFrag {
-    #[structopt(
-        parse(from_os_str),
-        help = "The files to print information for",
-        min_values = 1
-    )]
+    /// The files to print information for.
+    #[clap(parse(from_os_str), min_values = 1)]
     files: Vec<PathBuf>,
 }
 
 fn main() {
-    let args: FileFrag = FileFrag::from_args();
+    let args: FileFrag = FileFrag::parse();
 
     for path in args.files {
         if let Err(e) = print_file(&path) {

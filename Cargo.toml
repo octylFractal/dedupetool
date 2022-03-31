@@ -5,17 +5,25 @@ authors = ["Octavia Togami <octavia.togami@gmail.com>"]
 license = "GPL-3.0-or-later"
 edition = "2021"
 
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
+
 [dependencies]
-console = "0.15"
-libc = "0.2"
-size_format = "1"
-thiserror = "1"
-structopt = "0.3"
+console = "0.15.0"
+libc = "0.2.119"
+size_format = "1.0.2"
+thiserror = "1.0.30"
+
+[dependencies.clap]
+version = "3.1.6"
+features = ["derive"]
 
 [dependencies.num-format]
 version = "0.4.0"
 features = ["with-system-locale"]
 
 [dependencies.tokio]
-version = "1"
+version = "1.17.0"
 features = ["sync", "rt-multi-thread", "macros", "fs"]

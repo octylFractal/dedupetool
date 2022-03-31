@@ -5,10 +5,10 @@ use std::collections::{HashMap, HashSet};
 use std::io::{stdin, BufRead};
 use std::process::exit;
 use std::sync::Arc;
+use clap::Parser;
 
 use console::Style;
 use size_format::SizeFormatterBinary;
-use structopt::StructOpt;
 use thiserror::Error;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Semaphore;
@@ -26,21 +26,22 @@ fn error_style() -> Style {
 
 type DedupeResult = Result<Option<DedupeInfo>, DedupeError>;
 
-#[derive(StructOpt)]
-#[structopt(name = "dedupetool", about = "File de-deuplicator")]
+/// File de-duplicator.
+#[derive(Parser)]
+#[clap(name = "dedupetool", version)]
 struct DedupeTool {
     /// Maximum concurrent de-dupe calls.
-    #[structopt(short, long, default_value = "32")]
+    #[clap(short, long, default_value = "32")]
     max_concurrency: usize,
     /// Should the up-front FIEMAP check for already shared files be skipped?
     /// This trades size report accuracy for speed.
-    #[structopt(long)]
+    #[clap(long)]
     skip_fiemap: bool,
 }
 
 #[tokio::main]
 async fn main() {
-    let args: DedupeTool = DedupeTool::from_args();
+    let args: DedupeTool = DedupeTool::parse();
     let permits = args.max_concurrency;
     let semaphore = Arc::new(Semaphore::new(permits));
     let (push_result, mut read_result) = tokio::sync::mpsc::channel::<DedupeResult>(32);
