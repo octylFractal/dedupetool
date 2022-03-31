@@ -1,5 +1,6 @@
 #![deny(warnings)]
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io::{stdin, BufRead};
 use std::process::exit;
@@ -7,11 +8,10 @@ use std::sync::Arc;
 
 use console::Style;
 use size_format::SizeFormatterBinary;
+use structopt::StructOpt;
 use thiserror::Error;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Semaphore;
-
-use structopt::StructOpt;
 
 use dedupetool::ioctl_fideduperange::{dedupe_files, DedupeRequest, DedupeResponse};
 use dedupetool::ioctl_fiemap::get_extents;
@@ -32,6 +32,10 @@ struct DedupeTool {
     /// Maximum concurrent de-dupe calls.
     #[structopt(short, long, default_value = "32")]
     max_concurrency: usize,
+    /// Should the up-front FIEMAP check for already shared files be skipped?
+    /// This trades size report accuracy for speed.
+    #[structopt(long)]
+    skip_fiemap: bool,
 }
 
 #[tokio::main]
@@ -60,7 +64,14 @@ async fn main() {
     });
 
     let mut dedup_lines = Vec::<String>::new();
-    let do_kick_off = |files| kick_off(files, Arc::clone(&semaphore), push_result.clone());
+    let do_kick_off = |files| {
+        kick_off(
+            args.skip_fiemap,
+            files,
+            Arc::clone(&semaphore),
+            push_result.clone(),
+        )
+    };
     for line_res in stdin().lock().lines() {
         let line = match line_res {
             Ok(l) => l.trim_end().to_owned(),
@@ -99,11 +110,16 @@ async fn main() {
     }
 }
 
-fn kick_off(files: Vec<String>, semaphore: Arc<Semaphore>, push_result: Sender<DedupeResult>) {
+fn kick_off(
+    skip_fiemap: bool,
+    files: Vec<String>,
+    semaphore: Arc<Semaphore>,
+    push_result: Sender<DedupeResult>,
+) {
     tokio::task::spawn(async move {
         let _permit = semaphore.acquire().await.expect("Failed to get permit");
 
-        let result = process_dedupe(files.clone())
+        let result = process_dedupe(skip_fiemap, Cow::Borrowed(&files))
             .await
             .map_err(|e| DedupeError {
                 target_files: files,
@@ -114,8 +130,14 @@ fn kick_off(files: Vec<String>, semaphore: Arc<Semaphore>, push_result: Sender<D
     });
 }
 
-async fn process_dedupe(mut files: Vec<String>) -> Result<Option<DedupeInfo>, std::io::Error> {
-    remove_already_shared_files(&mut files).await?;
+async fn process_dedupe(
+    skip_fiemap: bool,
+    mut files: Cow<'_, Vec<String>>,
+) -> Result<Option<DedupeInfo>, std::io::Error> {
+    if !skip_fiemap {
+        remove_already_shared_files(files.to_mut()).await?;
+    }
+
     if files.len() < 2 {
         // There are no files to deduplicate.
         return Ok(None);
@@ -150,8 +172,10 @@ async fn process_dedupe(mut files: Vec<String>) -> Result<Option<DedupeInfo>, st
         for response in response_vec {
             match response {
                 DedupeResponse::RangeSame { bytes_deduped } => {
-                    files_affected.insert(file.clone());
-                    total_bytes_saved += bytes_deduped;
+                    if bytes_deduped > 0 {
+                        files_affected.insert(file.clone());
+                        total_bytes_saved += bytes_deduped;
+                    }
                 }
                 DedupeResponse::Error(e) => {
                     files_errored.insert(file.clone(), e);
