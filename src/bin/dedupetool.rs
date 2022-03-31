@@ -5,13 +5,14 @@ use std::collections::{HashMap, HashSet};
 use std::io::{stdin, BufRead};
 use std::process::exit;
 use std::sync::Arc;
-use clap::Parser;
 
+use clap::Parser;
 use console::Style;
 use size_format::SizeFormatterBinary;
 use thiserror::Error;
+use tokio::runtime::Handle;
 use tokio::sync::mpsc::Sender;
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use dedupetool::ioctl_fideduperange::{dedupe_files, DedupeRequest, DedupeResponse};
 use dedupetool::ioctl_fiemap::get_extents;
@@ -66,12 +67,14 @@ async fn main() {
 
     let mut dedup_lines = Vec::<String>::new();
     let do_kick_off = |files| {
-        kick_off(
-            args.skip_fiemap,
-            files,
-            Arc::clone(&semaphore),
-            push_result.clone(),
-        )
+        let semaphore = semaphore.clone();
+        let permit = Handle::current().block_on(async move {
+            semaphore
+                .acquire_owned()
+                .await
+                .expect("Failed to get permit")
+        });
+        kick_off(args.skip_fiemap, files, permit, push_result.clone())
     };
     for line_res in stdin().lock().lines() {
         let line = match line_res {
@@ -114,12 +117,10 @@ async fn main() {
 fn kick_off(
     skip_fiemap: bool,
     files: Vec<String>,
-    semaphore: Arc<Semaphore>,
+    semaphore_permit: OwnedSemaphorePermit,
     push_result: Sender<DedupeResult>,
 ) {
     tokio::task::spawn(async move {
-        let _permit = semaphore.acquire().await.expect("Failed to get permit");
-
         let result = process_dedupe(skip_fiemap, Cow::Borrowed(&files))
             .await
             .map_err(|e| DedupeError {
@@ -128,6 +129,7 @@ fn kick_off(
             });
 
         push_result.send(result).await.expect("Send failed");
+        drop(semaphore_permit);
     });
 }
 
