@@ -14,7 +14,7 @@ use dedupetool::ioctl_fiemap::get_extents;
 #[clap(name = "filefrag-rs", version)]
 struct FileFrag {
     /// The files to print information for.
-    #[clap(parse(from_os_str), min_values = 1)]
+    #[clap(num_args = 1..)]
     files: Vec<PathBuf>,
 }
 

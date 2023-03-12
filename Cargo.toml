@@ -11,17 +11,17 @@ lto = true
 strip = true
 
 [dependencies]
-console = "0.15.0"
-futures = "0.3.21"
-libc = "0.2.119"
-num-format = "0.4.0"
+console = "0.15.5"
+futures = "0.3.27"
+libc = "0.2.140"
+num-format = "0.4.4"
 size_format = "1.0.2"
-thiserror = "1.0.30"
+thiserror = "1.0.39"
 
 [dependencies.clap]
-version = "3.1.6"
+version = "4.1.8"
 features = ["derive"]
 
 [dependencies.tokio]
-version = "1.17.0"
+version = "1.26.0"
 features = ["rt-multi-thread", "macros", "fs"]
