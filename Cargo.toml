@@ -1,9 +1,10 @@
 [package]
 name = "dedupetool"
-version = "0.1.0"
+version = "0.1.1-dev"
 authors = ["Octavia Togami <octavia.togami@gmail.com>"]
 license = "GPL-3.0-or-later"
 edition = "2021"
+publish = false
 
 [profile.release]
 codegen-units = 1
