@@ -120,7 +120,8 @@ fn call_ioctl_unsafe(
             array = array.add(1);
         }
 
-        let result = ioctl(src, FIDEDUPERANGE, memchunk);
+        // `unwrap` is fine as we just checked for null
+        let result = ioctl(src, FIDEDUPERANGE, memchunk.as_mut().unwrap());
 
         if result.is_ok() {
             // copy back results

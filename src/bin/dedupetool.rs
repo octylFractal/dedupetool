@@ -2,16 +2,20 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
-use std::io::{BufRead, stdin};
+use std::io::{BufRead, Lines, stdin, StdinLock};
+use std::path::PathBuf;
 use std::process::exit;
+use std::sync::Arc;
 
 use clap::Parser;
 use console::Style;
+use fclones::config::GroupConfig;
+use fclones::log::StdLog;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use size_format::SizeFormatterBinary;
 use thiserror::Error;
+use tokio::sync::{Mutex, Semaphore};
 
 use dedupetool::ioctl_fideduperange::{dedupe_files, DedupeRequest, DedupeResponse};
 use dedupetool::ioctl_fiemap::get_extents;
@@ -37,50 +41,60 @@ struct DedupeTool {
     /// This trades size report accuracy for speed.
     #[clap(long)]
     skip_fiemap: bool,
+    /// If present, indicates how to load the files to de-dupe.
+    #[clap(subcommand)]
+    subcommand: Option<FileLoadMode>,
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[derive(Parser)]
+enum FileLoadMode {
+    /// Load files from stdin.
+    Stdin,
+    /// Find files using `fclones`. Takes the same arguments as `fclones group`.
+    Fclones(GroupConfig),
+}
+
+impl Default for FileLoadMode {
+    fn default() -> Self {
+        Self::Stdin
+    }
+}
+
+#[tokio::main]
 async fn main() {
     let args: DedupeTool = DedupeTool::parse();
 
-    let mut tracker = Tracker::default();
-    let mut dedup_lines = Vec::<String>::new();
-    let mut pending = FuturesUnordered::new();
-    for line_res in stdin().lock().lines() {
-        let line = match line_res {
-            Ok(l) => l.trim_end().to_owned(),
-            Err(e) => panic!("Failed to read from stdin: {}", e),
+    let to_dedupe: Box<dyn Iterator<Item=Vec<PathBuf>>> =
+        if let Some(FileLoadMode::Fclones(fclones_args)) = args.subcommand {
+            Box::new(fclones_file_groups(fclones_args))
+        } else {
+            Box::new(stdin_fdupes_file_groups())
         };
-        if line.is_empty() {
-            if dedup_lines.len() > 1 {
-                let task = limit_concurrency(
-                    args.max_concurrency,
-                    process_dedupe(args.skip_fiemap, dedup_lines.clone()),
-                    &mut pending,
-                );
-                if let Some(result) = task.await {
-                    tracker.record_result(result);
-                }
-            }
-            dedup_lines.clear();
-            continue;
-        }
-        dedup_lines.push(line);
-    }
 
-    if !dedup_lines.is_empty() {
-        let task = limit_concurrency(
-            args.max_concurrency,
-            process_dedupe(args.skip_fiemap, dedup_lines),
-            &mut pending,
-        );
-        if let Some(result) = task.await {
+    let tracker = Arc::new(Mutex::new(Tracker::default()));
+    let concurrency_mutex = Arc::new(Semaphore::new(args.max_concurrency));
+    let mut dedupe_futures = FuturesUnordered::new();
+
+    for files in to_dedupe {
+        let skip_fiemap = args.skip_fiemap;
+        let files = files.into_iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        let tracker = tracker.clone();
+        let concurrency_mutex = concurrency_mutex.clone();
+        // Avoid over-pulling from the iterator by waiting for the semaphore to be available.
+        let owned = concurrency_mutex.acquire_owned().await.unwrap();
+        dedupe_futures.push(tokio::spawn(async move {
+            let _permit = owned;
+            let result = process_dedupe(skip_fiemap, files).await;
+            let mut tracker = tracker.lock().await;
             tracker.record_result(result);
-        }
+        }));
     }
 
-    // Burn the rest of the tasks off...
-    while pending.next().await.is_some() {}
+    while let Some(f) = dedupe_futures.next().await {
+        f.expect("Panic in dedupe future");
+    }
+
+    let tracker = tracker.lock().await;
 
     eprintln!(
         "{}",
@@ -95,19 +109,45 @@ async fn main() {
     }
 }
 
-async fn limit_concurrency<F, T>(
-    max_concurrency: usize,
-    task: F,
-    pending: &mut FuturesUnordered<F>,
-) -> Option<T>
-where
-    F: Future<Output = T>,
-{
-    pending.push(task);
-    if pending.len() == max_concurrency {
-        return Some(pending.next().await.unwrap());
+fn fclones_file_groups(config: GroupConfig) -> impl Iterator<Item=Vec<PathBuf>> {
+    fclones::group_files(&config, &StdLog::new()).expect("Failed to group files")
+        .into_iter()
+        .map(|g| g.files.into_iter().map(|f| f.path.to_path_buf()).collect())
+}
+
+fn stdin_fdupes_file_groups() -> impl Iterator<Item=Vec<PathBuf>> {
+    struct Iter {
+        iter: Lines<StdinLock<'static>>,
+        dedup_lines: Vec<String>,
     }
-    None
+
+    impl Iterator for Iter {
+        type Item = Vec<PathBuf>;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            for line_res in self.iter.by_ref() {
+                let line = match line_res {
+                    Ok(l) => l.trim_end().to_owned(),
+                    Err(e) => panic!("Failed to read from stdin: {}", e),
+                };
+                if line.is_empty() {
+                    if self.dedup_lines.len() > 1 {
+                        return Some(self.dedup_lines.drain(..).map(PathBuf::from).collect());
+                    }
+                    continue;
+                }
+                self.dedup_lines.push(line);
+            }
+            (self.dedup_lines.len() > 1).then(||
+                self.dedup_lines.drain(..).map(PathBuf::from).collect()
+            )
+        }
+    }
+
+    Iter {
+        iter: stdin().lock().lines(),
+        dedup_lines: Vec::new(),
+    }
 }
 
 async fn process_dedupe(skip_fiemap: bool, files: Vec<String>) -> DedupeResult {
@@ -159,8 +199,8 @@ async fn internal_process_dedupe(
             dest_reqs,
         )
     })
-    .await
-    .expect("failed to spawn blocking")?;
+        .await
+        .expect("failed to spawn blocking")?;
 
     let mut files_errored = HashMap::<String, std::io::Error>::new();
     let mut files_affected = HashSet::<String>::new();

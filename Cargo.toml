@@ -17,6 +17,7 @@ libc = "0.2.140"
 num-format = "0.4.4"
 size_format = "1.0.2"
 thiserror = "1.0.39"
+fclones = "0.30.0"
 
 [dependencies.clap]
 version = "4.1.8"
@@ -24,4 +25,4 @@ features = ["derive"]
 
 [dependencies.tokio]
 version = "1.26.0"
-features = ["rt-multi-thread", "macros", "fs"]
+features = ["rt-multi-thread", "macros", "fs", "sync"]
