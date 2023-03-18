@@ -1,10 +1,12 @@
 //! An tiny wrapper over the FIDEDUPERANGE ioctl.
 
 use std::collections::HashMap;
+use std::fs::OpenOptions;
 use std::hash::Hash;
 use std::mem::size_of;
 use std::ops::Range;
 use std::os::unix::io::{AsRawFd, RawFd};
+use std::path::{Path, PathBuf};
 
 use crate::ioctl::ioctl;
 use crate::ioctl_consts::*;
@@ -26,20 +28,28 @@ pub fn dedupe_files<K: Eq + Hash + Clone>(
     src_range: Range<u64>,
     request: HashMap<K, DedupeRequest>,
 ) -> Result<HashMap<K, Vec<DedupeResponse>>, std::io::Error> {
-    let fd_map: HashMap<RawFd, K> = request
-        .keys()
-        .map(|k| (request[k].dest.as_raw_fd(), k.clone()))
-        .collect();
-
     let full_length = src_range.end - src_range.start;
     let mut offset = 0;
     let mut aggregate_results = HashMap::<K, Vec<DedupeResponse>>::new();
     while offset < full_length {
         for req_chunk in request
-            .values()
+            .iter()
             .collect::<Vec<_>>()
             .chunks(IOCTL_DEDUPE_MAX_DESTS)
         {
+            let open_fds = req_chunk
+                .iter()
+                .map(|(_, r)| {
+                    OpenOptions::new()
+                        .write(true)
+                        .open(&r.dest)
+                        .map(|f| (r.dest.clone(), f))
+                })
+                .collect::<Result<HashMap<_, _>, _>>()?;
+            let fd_map: HashMap<RawFd, K> = req_chunk
+                .iter()
+                .map(|(k, r)| (open_fds[&r.dest].as_raw_fd(), K::clone(k)))
+                .collect();
             let request_internal = DedupeRequestInternal {
                 src_offset: src_range.start + offset,
                 src_length: u64::min(
@@ -52,8 +62,8 @@ pub fn dedupe_files<K: Eq + Hash + Clone>(
             };
             let mut infos = req_chunk
                 .iter()
-                .map(|r| DedupeRequestInternalInfo {
-                    dest_fd: r.dest.as_raw_fd() as i64,
+                .map(|(_, r)| DedupeRequestInternalInfo {
+                    dest_fd: open_fds[&r.dest].as_raw_fd() as i64,
                     dest_offset: r.dest_offset + offset,
                     // Purposefully throw junk in the return values
                     // That way, if for some reason they don't get filled, we know
@@ -138,14 +148,14 @@ fn call_ioctl_unsafe(
 }
 
 pub struct DedupeRequest {
-    dest: std::fs::File,
+    dest: PathBuf,
     dest_offset: u64,
 }
 
 impl DedupeRequest {
-    pub fn new(dest: std::fs::File, offset: u64) -> DedupeRequest {
+    pub fn new<P: AsRef<Path>>(dest: P, offset: u64) -> DedupeRequest {
         DedupeRequest {
-            dest,
+            dest: dest.as_ref().to_path_buf(),
             dest_offset: offset,
         }
     }

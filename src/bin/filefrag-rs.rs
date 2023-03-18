@@ -49,7 +49,10 @@ fn print_file(path: &Path) -> Result<(), std::io::Error> {
             extent.physical_offset.to_formatted_string(&Locale::en),
             (extent.physical_offset + extent.length).to_formatted_string(&Locale::en)
         );
-        println!("    Length: {}", extent.length.to_formatted_string(&Locale::en));
+        println!(
+            "    Length: {}",
+            extent.length.to_formatted_string(&Locale::en)
+        );
         println!(
             "    Flags: {}",
             extent

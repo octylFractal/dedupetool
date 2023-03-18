@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, Lines, stdin, StdinLock};
+use std::io::{stdin, BufRead, Lines, StdinLock};
 use std::path::PathBuf;
 use std::process::exit;
 use std::sync::Arc;
@@ -64,7 +64,7 @@ impl Default for FileLoadMode {
 async fn main() {
     let args: DedupeTool = DedupeTool::parse();
 
-    let to_dedupe: Box<dyn Iterator<Item=Vec<PathBuf>>> =
+    let to_dedupe: Box<dyn Iterator<Item = Vec<PathBuf>>> =
         if let Some(FileLoadMode::Fclones(fclones_args)) = args.subcommand {
             Box::new(fclones_file_groups(fclones_args))
         } else {
@@ -77,7 +77,10 @@ async fn main() {
 
     for files in to_dedupe {
         let skip_fiemap = args.skip_fiemap;
-        let files = files.into_iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        let files = files
+            .into_iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
         let tracker = tracker.clone();
         let concurrency_mutex = concurrency_mutex.clone();
         // Avoid over-pulling from the iterator by waiting for the semaphore to be available.
@@ -109,13 +112,14 @@ async fn main() {
     }
 }
 
-fn fclones_file_groups(config: GroupConfig) -> impl Iterator<Item=Vec<PathBuf>> {
-    fclones::group_files(&config, &StdLog::new()).expect("Failed to group files")
+fn fclones_file_groups(config: GroupConfig) -> impl Iterator<Item = Vec<PathBuf>> {
+    fclones::group_files(&config, &StdLog::new())
+        .expect("Failed to group files")
         .into_iter()
         .map(|g| g.files.into_iter().map(|f| f.path.to_path_buf()).collect())
 }
 
-fn stdin_fdupes_file_groups() -> impl Iterator<Item=Vec<PathBuf>> {
+fn stdin_fdupes_file_groups() -> impl Iterator<Item = Vec<PathBuf>> {
     struct Iter {
         iter: Lines<StdinLock<'static>>,
         dedup_lines: Vec<String>,
@@ -138,9 +142,8 @@ fn stdin_fdupes_file_groups() -> impl Iterator<Item=Vec<PathBuf>> {
                 }
                 self.dedup_lines.push(line);
             }
-            (self.dedup_lines.len() > 1).then(||
-                self.dedup_lines.drain(..).map(PathBuf::from).collect()
-            )
+            (self.dedup_lines.len() > 1)
+                .then(|| self.dedup_lines.drain(..).map(PathBuf::from).collect())
         }
     }
 
@@ -161,7 +164,7 @@ async fn process_dedupe(skip_fiemap: bool, files: Vec<String>) -> DedupeResult {
 
 async fn internal_process_dedupe(
     skip_fiemap: bool,
-    mut files: Cow<'_, Vec<String>>,
+    mut files: Cow<'_, [String]>,
 ) -> Result<Option<DedupeInfo>, std::io::Error> {
     if !skip_fiemap {
         remove_already_shared_files(files.to_mut()).await?;
@@ -183,15 +186,10 @@ async fn internal_process_dedupe(
     // 'static-ify first & rest by cloning them
     let first_static = first.clone();
     let rest = Vec::from(rest);
-    let responses: HashMap<String, Vec<DedupeResponse>> = tokio::task::spawn_blocking(move || {
+    let responses = tokio::task::spawn_blocking(move || {
         let dest_reqs = rest
             .iter()
-            .map(|file| {
-                Ok((
-                    file.clone(),
-                    DedupeRequest::new(std::fs::OpenOptions::new().write(true).open(file)?, 0),
-                ))
-            })
+            .map(|file| Ok((file.clone(), DedupeRequest::new(file, 0))))
             .collect::<Result<HashMap<String, DedupeRequest>, std::io::Error>>()?;
         dedupe_files(
             &first_file,
@@ -199,8 +197,8 @@ async fn internal_process_dedupe(
             dest_reqs,
         )
     })
-        .await
-        .expect("failed to spawn blocking")?;
+    .await
+    .expect("failed to spawn blocking")?;
 
     let mut files_errored = HashMap::<String, std::io::Error>::new();
     let mut files_affected = HashSet::<String>::new();
