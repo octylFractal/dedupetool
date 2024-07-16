@@ -2,7 +2,7 @@
 name = "dedupetool"
 version = "0.1.2-dev"
 authors = ["Octavia Togami <octavia.togami@gmail.com>"]
-license = "GPL-3.0-or-later"
+license = "MPL-2"
 edition = "2021"
 publish = false
 
