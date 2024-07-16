@@ -458,6 +458,7 @@ dependencies = [
  "rangemap",
  "rayon",
  "thiserror",
+ "thread_local",
  "tokio",
  "tokio-stream",
  "walkdir",

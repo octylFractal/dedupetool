@@ -22,6 +22,7 @@ flume = "0.11.0"
 rangemap = "1.5.1"
 pin-project-lite = "0.2.14"
 parse-display = "0.9.1"
+thread_local = "1.1.8"
 
 [dependencies.clap]
 version = "4.5.9"

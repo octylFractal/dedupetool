@@ -1,9 +1,9 @@
 //! An tiny wrapper over the FIDEDUPERANGE ioctl.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::hash::Hash;
-use std::mem::size_of;
 use std::ops::Range;
 use std::os::linux::fs::MetadataExt;
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -19,6 +19,25 @@ const IOCTL_DEDUPE_MAX_DESTS: usize = 100;
 
 /// We're only likely to be able to dedupe this much at once. See ioctl_fideduperange(2) for why.
 const IOCTL_DEDUPE_MAX_BYTES: u64 = 16 * 1024 * 1024;
+
+thread_local! {
+    pub static SHARED_REQUEST: RefCell<DedupeRequestInternal> = const {
+        RefCell::new(DedupeRequestInternal {
+            src_offset: 0,
+            src_length: 0,
+            dest_count: 0,
+            reserved1: 0,
+            reserved2: 0,
+            info: [DedupeRequestInternalInfo {
+                dest_fd: 0,
+                dest_offset: 0,
+                bytes_deduped: 0,
+                status: 0,
+                reserved: 0,
+            }; IOCTL_DEDUPE_MAX_DESTS],
+        })
+    };
+}
 
 /// Dedupes [src]'s bytes from other files ([request]).
 ///
@@ -61,101 +80,61 @@ pub fn dedupe_files<K: Eq + Hash + Clone>(
                 .iter()
                 .map(|(k, r)| (open_fds[&r.dest].as_raw_fd(), K::clone(k)))
                 .collect();
-            let mut request_internal = DedupeRequestInternal {
-                src_offset: align_down(src_range.start + offset, block_size),
-                src_length: u64::min(
+            SHARED_REQUEST.with_borrow_mut(|req| -> Result<(), std::io::Error> {
+                req.src_offset = align_down(src_range.start + offset, block_size);
+                req.src_length = u64::min(
                     src_range.end - (src_range.start + offset),
                     IOCTL_DEDUPE_MAX_BYTES,
-                ),
-                dest_count: req_chunk.len() as u16,
-                reserved1: 0,
-                reserved2: 0,
-            };
-            let mut infos = req_chunk
-                .iter()
-                .map(|(_, r)| DedupeRequestInternalInfo {
-                    dest_fd: open_fds[&r.dest].as_raw_fd() as i64,
-                    dest_offset: align_down(r.dest_offset + offset, block_size),
+                );
+                req.dest_count = req_chunk.len() as u16;
+                // Clear reserved fields just in case
+                req.reserved1 = 0;
+                req.reserved2 = 0;
+                for ((_, r), info) in req_chunk.iter().zip(req.info.iter_mut()) {
+                    info.dest_fd = open_fds[&r.dest].as_raw_fd() as i64;
+                    info.dest_offset = align_down(r.dest_offset + offset, block_size);
                     // Purposefully throw junk in the return values
                     // That way, if for some reason they don't get filled, we know
-                    bytes_deduped: u64::MIN,
-                    status: i32::MAX,
-                    reserved: 0,
-                })
-                .collect::<Vec<_>>();
-            call_ioctl_unsafe(src, request_internal, &mut infos)?;
+                    info.bytes_deduped = u64::MAX;
+                    info.status = i32::MAX;
+                    // Clear reserved fields just in case
+                    info.reserved = 0;
+                }
+                ioctl(src, FIDEDUPERANGE, req)?;
 
-            for info in infos {
-                let response = match info.status {
-                    errno if errno < 0 => {
-                        DedupeResponse::Error(std::io::Error::from_raw_os_error(-errno))
-                    }
-                    FILE_DEDUPE_RANGE_DIFFERS => DedupeResponse::RangeDiffers,
-                    FILE_DEDUPE_RANGE_SAME => {
-                        if info.bytes_deduped == 0 {
-                            // I guess this is also RangeDiffers?
-                            DedupeResponse::RangeDiffers
-                        } else {
-                            DedupeResponse::RangeSame {
-                                bytes_deduped: info.bytes_deduped,
+                for info in &req.info[0..req_chunk.len()] {
+                    let response = match info.status {
+                        errno if errno < 0 => {
+                            DedupeResponse::Error(std::io::Error::from_raw_os_error(-errno))
+                        }
+                        FILE_DEDUPE_RANGE_DIFFERS => DedupeResponse::RangeDiffers,
+                        FILE_DEDUPE_RANGE_SAME => {
+                            assert_ne!(info.bytes_deduped, u64::MAX, "bytes_deduped not filled in");
+                            if info.bytes_deduped == 0 {
+                                // I guess this is also RangeDiffers?
+                                DedupeResponse::RangeDiffers
+                            } else {
+                                DedupeResponse::RangeSame {
+                                    bytes_deduped: info.bytes_deduped,
+                                }
                             }
                         }
-                    }
-                    unknown => panic!("Unknown status from FIDEDUPERANGE ioctl: {}", unknown),
-                };
-                let vec = aggregate_results
-                    .entry(fd_map[&(info.dest_fd as RawFd)].clone())
-                    .or_insert_with(Vec::new);
-                vec.push(response);
-            }
+                        unknown => panic!("Unknown status from FIDEDUPERANGE ioctl: {}", unknown),
+                    };
+                    aggregate_results
+                        .entry(fd_map[&(info.dest_fd as RawFd)].clone())
+                        .or_default()
+                        .push(response);
+                }
+
+                Ok(())
+            })?;
         }
 
         offset += IOCTL_DEDUPE_MAX_BYTES;
     }
 
     Ok(aggregate_results)
-}
-
-fn call_ioctl_unsafe(
-    src: &std::fs::File,
-    request_internal: DedupeRequestInternal,
-    infos: &mut [DedupeRequestInternalInfo],
-) -> Result<(), std::io::Error> {
-    unsafe {
-        // I'm going MAD with POWER!
-        let memsize = size_of::<DedupeRequestInternal>()
-            + size_of::<DedupeRequestInternalInfo>() * (request_internal.dest_count) as usize;
-        let memchunk = libc::malloc(memsize);
-        if memchunk.is_null() {
-            panic!("Couldn't malloc data for the request!");
-        }
-        let req_ptr = memchunk.cast::<DedupeRequestInternal>();
-        // push in the request at the front
-        req_ptr.write(request_internal);
-
-        // fill in the """array"""
-        let array_base = req_ptr.add(1).cast::<DedupeRequestInternalInfo>();
-        let mut array = array_base;
-        for x in infos.iter() {
-            array.write(x.clone());
-            array = array.add(1);
-        }
-
-        // `unwrap` is fine as we just checked for null
-        let result = ioctl(src, FIDEDUPERANGE, memchunk.as_mut().unwrap());
-
-        if result.is_ok() {
-            // copy back results
-            array = array_base;
-            for x in infos.iter_mut() {
-                *x = array.read();
-                array = array.add(1);
-            }
-        }
-
-        libc::free(memchunk);
-        result
-    }
 }
 
 pub struct DedupeRequest {
@@ -186,10 +165,11 @@ struct DedupeRequestInternal {
     dest_count: u16,
     reserved1: u16,
     reserved2: u32,
+    info: [DedupeRequestInternalInfo; IOCTL_DEDUPE_MAX_DESTS],
 }
 
 #[repr(C)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 struct DedupeRequestInternalInfo {
     dest_fd: i64,
     dest_offset: u64,
