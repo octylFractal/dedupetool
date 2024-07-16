@@ -1,7 +1,7 @@
 #![deny(warnings)]
 
 use std::collections::{HashMap, HashSet};
-use std::io::{stdin, BufRead, Lines, StdinLock};
+use std::io::{BufRead, Lines, stdin, StdinLock};
 use std::path::PathBuf;
 use std::process::exit;
 use std::sync::Arc;
@@ -15,7 +15,7 @@ use indicatif::HumanBytes;
 use thiserror::Error;
 use tokio::sync::{Mutex, Semaphore};
 
-use dedupetool::diskblade::{DiskBladeConfig, FileOffset, FileSectionTarget};
+use dedupetool::diskblade::{FileOffset, FileSectionTarget};
 use dedupetool::ioctl_fideduperange::{dedupe_files, DedupeRequest, DedupeResponse};
 use dedupetool::ioctl_fiemap::get_extents;
 use dedupetool::termhelp::{log_diag, StderrStyle};
@@ -43,9 +43,6 @@ struct DedupeTool {
 
 #[derive(Subcommand)]
 enum DeduplicationTargetFinder {
-    /// Find file *sections* using a specialized algorithm based on FastCDC.
-    /// This enables more fine-grained de-duplication than the other modes.
-    DiskBlade(DiskBladeConfig),
     /// Load files from stdin.
     Stdin,
     /// Find files using `fclones`. Takes the same arguments as `fclones group`.
@@ -55,9 +52,6 @@ enum DeduplicationTargetFinder {
 impl DeduplicationTargetFinder {
     async fn into_target_iter(self) -> Box<dyn Iterator<Item = DeduplicationTarget>> {
         match self {
-            DeduplicationTargetFinder::DiskBlade(config) => {
-                Box::new(diskblade_targets(config).await)
-            }
             DeduplicationTargetFinder::Stdin => Box::new(stdin_fdupes_targets()),
             DeduplicationTargetFinder::Fclones(config) => Box::new(fclones_targets(config)),
         }
@@ -85,9 +79,6 @@ async fn main() {
                     for file in files {
                         log_diag(file.display().to_string().success_style());
                     }
-                }
-                DeduplicationTarget::Sections(sections) => {
-                    log_diag(format!("{:?}", sections).success_style());
                 }
             }
             continue;
@@ -122,15 +113,6 @@ async fn main() {
 #[derive(Debug, Clone)]
 enum DeduplicationTarget {
     Files(Vec<PathBuf>),
-    Sections(FileSectionTarget),
-}
-
-async fn diskblade_targets(config: DiskBladeConfig) -> impl Iterator<Item = DeduplicationTarget> {
-    dedupetool::diskblade::group_files(config)
-        .await
-        .expect("Failed to group files")
-        .into_iter()
-        .map(DeduplicationTarget::Sections)
 }
 
 fn fclones_targets(config: GroupConfig) -> impl Iterator<Item = DeduplicationTarget> {
@@ -190,7 +172,6 @@ async fn internal_process_dedupe(
     // Reduce target to FileSectionTarget only.
     let mut target = match target {
         DeduplicationTarget::Files(files) => resolve_file_sections(files).await?,
-        DeduplicationTarget::Sections(t) => t,
     };
     if !skip_fiemap {
         remove_already_shared_file_sections(&mut target).await?;
@@ -368,12 +349,7 @@ fn print_task_completion(result: DedupeResult) {
         Ok(_) => {}
         Err(e) => {
             log_diag(format!("Got {} while trying to dedupe these files:", e.source).error_style());
-            let files = match e.target {
-                DeduplicationTarget::Files(files) => files,
-                DeduplicationTarget::Sections(target) => {
-                    target.offsets.into_iter().map(|s| s.into_file()).collect()
-                }
-            };
+            let DeduplicationTarget::Files(files) = e.target;
             for targeted in files {
                 log_diag(format!("    {}", targeted.display()).error_style());
             }

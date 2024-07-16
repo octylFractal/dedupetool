@@ -13,24 +13,11 @@ libc = "0.2.155"
 num-format = "0.4.4"
 thiserror = "1.0.62"
 fclones = "0.34.0"
-walkdir = "2.5.0"
-rayon = "1.10.0"
 indicatif = "0.17.8"
-tokio-stream = "0.1.15"
-num_cpus = "1.16.0"
-flume = "0.11.0"
-rangemap = "1.5.1"
-pin-project-lite = "0.2.14"
-parse-display = "0.9.1"
-thread_local = "1.1.8"
 
 [dependencies.clap]
 version = "4.5.9"
 features = ["derive"]
-
-[dependencies.fastcdc]
-path = "../fastcdc-rs"
-features = ["futures"]
 
 [dependencies.tokio]
 version = "1.38.0"
