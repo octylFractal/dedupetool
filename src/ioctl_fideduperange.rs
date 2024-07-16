@@ -5,6 +5,7 @@ use std::fs::OpenOptions;
 use std::hash::Hash;
 use std::mem::size_of;
 use std::ops::Range;
+use std::os::linux::fs::MetadataExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::{Path, PathBuf};
 
@@ -23,11 +24,21 @@ const IOCTL_DEDUPE_MAX_BYTES: u64 = 16 * 1024 * 1024;
 ///
 /// Destination files go in [request], keyed by whatever you wish. Results will be reported
 /// under the same keys.
+#[allow(warnings)]
 pub fn dedupe_files<K: Eq + Hash + Clone>(
     src: &std::fs::File,
     src_range: Range<u64>,
     request: HashMap<K, DedupeRequest>,
 ) -> Result<HashMap<K, Vec<DedupeResponse>>, std::io::Error> {
+    let metadata = src.metadata()?;
+    let block_size = metadata.st_blksize();
+    fn align_down(n: u64, align: u64) -> u64 {
+        n - ((n * align) / align)
+    }
+    fn align_up(n: u64, align: u64) -> u64 {
+        ((n + align - 1) / align) * align
+    }
+
     let full_length = src_range.end - src_range.start;
     let mut offset = 0;
     let mut aggregate_results = HashMap::<K, Vec<DedupeResponse>>::new();
@@ -50,8 +61,8 @@ pub fn dedupe_files<K: Eq + Hash + Clone>(
                 .iter()
                 .map(|(k, r)| (open_fds[&r.dest].as_raw_fd(), K::clone(k)))
                 .collect();
-            let request_internal = DedupeRequestInternal {
-                src_offset: src_range.start + offset,
+            let mut request_internal = DedupeRequestInternal {
+                src_offset: align_down(src_range.start + offset, block_size),
                 src_length: u64::min(
                     src_range.end - (src_range.start + offset),
                     IOCTL_DEDUPE_MAX_BYTES,
@@ -64,7 +75,7 @@ pub fn dedupe_files<K: Eq + Hash + Clone>(
                 .iter()
                 .map(|(_, r)| DedupeRequestInternalInfo {
                     dest_fd: open_fds[&r.dest].as_raw_fd() as i64,
-                    dest_offset: r.dest_offset + offset,
+                    dest_offset: align_down(r.dest_offset + offset, block_size),
                     // Purposefully throw junk in the return values
                     // That way, if for some reason they don't get filled, we know
                     bytes_deduped: u64::MIN,
@@ -167,7 +178,7 @@ pub enum DedupeResponse {
     RangeSame { bytes_deduped: u64 },
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 #[repr(C)]
 struct DedupeRequestInternal {
     src_offset: u64,
@@ -178,7 +189,7 @@ struct DedupeRequestInternal {
 }
 
 #[repr(C)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct DedupeRequestInternalInfo {
     dest_fd: i64,
     dest_offset: u64,
