@@ -440,7 +440,7 @@ dependencies = [
 
 [[package]]
 name = "dedupetool"
-version = "0.1.2-dev"
+version = "0.1.2"
 dependencies = [
  "assert_unordered",
  "clap",
